@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex Timer"
-  short_description: "用全局命令创建延迟消息，到时向当前 Codex 会话发送原文并继续工作"
-  default_prompt: "使用 $codex-timer，在 75 分钟后向本会话发送“请检查实验结果”。"
+  short_description: "根据长时间异步任务的首次检查估计时长，为当前 Codex 会话安排定时复查"
+  default_prompt: "使用 $codex-timer，根据训练实验的首次检查进度估计剩余时长，安排定时复查并跟进到完成或失败。"
