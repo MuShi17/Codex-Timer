@@ -46,7 +46,7 @@ def main():
         installed = run([sys.executable, str(clone / 'install.py'), '--no-path-update'])
         print(installed.stdout, flush=True)
         assert (home / 'skills' / 'codex-timer' / 'SKILL.md').is_file()
-        assert command('--version').stdout.strip() == 'codex-timer 0.4.0'
+        assert command('--version').stdout.strip() == 'codex-timer 0.4.1'
         doctor = json.loads(command('doctor').stdout)
         assert Path(doctor['state']) == home / 'codex-timer', doctor
         assert doctor['skill_installed'] and doctor['command'], doctor
@@ -54,7 +54,7 @@ def main():
         moved = root / 'moved-clone'
         assert clone.resolve().parent == root.resolve() and moved.resolve().parent == root.resolve()
         clone.rename(moved)
-        assert command('--version').stdout.strip() == 'codex-timer 0.4.0'
+        assert command('--version').stdout.strip() == 'codex-timer 0.4.1'
         assert json.loads(command('install-skill').stdout)['status'] == 'installed'
         skill_path = home / 'skills' / 'codex-timer' / 'SKILL.md'
         original = skill_path.read_bytes()
@@ -89,7 +89,7 @@ def main():
         print(normal.stdout, flush=True)
         verification = json.loads((ROOT / 'verification.json').read_text(encoding='utf-8'))
         verification['global_install'] = {
-            'version': '0.4.0', 'isolated_tool_and_codex_home': True,
+            'version': '0.4.1', 'isolated_tool_and_codex_home': True,
             'passed': [
                 'one installation command installs the global CLI and skill',
                 'bare codex-timer command works from an unrelated project directory',

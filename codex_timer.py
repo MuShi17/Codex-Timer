@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 
 def codex_home(explicit=None):
@@ -705,7 +705,9 @@ def detached_kwargs():
     result = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
               "close_fds": True}
     if os.name == "nt":
-        result["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        # DETACHED_PROCESS disables CREATE_NO_WINDOW; a venv Python launcher
+        # can then create a console when it starts the underlying interpreter.
+        result["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     else:
         result["start_new_session"] = True
     return result

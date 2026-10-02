@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-timer"
-version = "0.4.0"
+version = "0.4.1"
 description = "One-shot delayed messages to a live Codex CLI or desktop session"
 requires-python = ">=3.9"
 readme = "README.md"
