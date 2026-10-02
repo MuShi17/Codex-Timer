@@ -46,7 +46,7 @@ def main():
         installed = run([sys.executable, str(clone / 'install.py'), '--no-path-update'])
         print(installed.stdout, flush=True)
         assert (home / 'skills' / 'codex-timer' / 'SKILL.md').is_file()
-        assert command('--version').stdout.strip() == 'codex-timer 0.2.0'
+        assert command('--version').stdout.strip() == 'codex-timer 0.3.0'
         doctor = json.loads(command('doctor').stdout)
         assert Path(doctor['state']) == home / 'codex-timer', doctor
         assert doctor['skill_installed'] and doctor['command'], doctor
@@ -54,7 +54,7 @@ def main():
         moved = root / 'moved-clone'
         assert clone.resolve().parent == root.resolve() and moved.resolve().parent == root.resolve()
         clone.rename(moved)
-        assert command('--version').stdout.strip() == 'codex-timer 0.2.0'
+        assert command('--version').stdout.strip() == 'codex-timer 0.3.0'
         assert json.loads(command('install-skill').stdout)['status'] == 'installed'
         skill_path = home / 'skills' / 'codex-timer' / 'SKILL.md'
         original = skill_path.read_bytes()
@@ -80,11 +80,13 @@ def main():
         # Restore this test user's managed skill before the runtime integration pass.
         command('install-skill', '--force')
         env['CODEX_TIMER_TEST_COMMAND'] = str(bin_dir / ('codex-timer.exe' if os.name == 'nt' else 'codex-timer'))
-        runtime = run([doctor['python'], str(ROOT / 'tests' / 'integration_timer.py')])
-        print(runtime.stdout, flush=True)
+        pty_package = 'pywinpty>=2,<3' if os.name == 'nt' else 'pexpect>=4,<5'
+        run([shutil.which('uv'), 'pip', 'install', '--python', doctor['python'], pty_package])
+        normal = run([doctor['python'], str(ROOT / 'tests' / 'normal_cli.py')])
+        print(normal.stdout, flush=True)
         verification = json.loads((ROOT / 'verification.json').read_text(encoding='utf-8'))
         verification['global_install'] = {
-            'version': '0.2.0', 'isolated_tool_and_codex_home': True,
+            'version': '0.3.0', 'isolated_tool_and_codex_home': True,
             'passed': [
                 'one installation command installs the global CLI and skill',
                 'bare codex-timer command works from an unrelated project directory',

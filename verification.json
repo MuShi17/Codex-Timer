@@ -1,22 +1,25 @@
 {
-  "codex_version": "codex-cli 0.159.2",
-  "provider": "local fake Responses endpoint; no external model calls",
-  "passed": [
-    "installed skill in CODEX_HOME/skills is discovered by the real Codex runtime",
-    "idle -> turn/start, detached worker, automatic thread ID, exact Unicode message",
-    "active -> turn/steer on the same turn ID",
-    "idle-to-active race: turn/start steers the existing turn without interrupting it",
-    "pending task edits affect the original detached worker",
-    "cancellation prevents delivery",
-    "two competing workers deliver only one user message",
-    "runtime exec_command schedules itself: CODEX_THREAD_ID and runtime lookup work; worker survives tool completion",
-    "unloaded thread is skipped, never resumed",
-    "runtime shutdown -> skipped, no new runtime",
-    "abrupt endpoint loss is detected without starting a replacement runtime"
-  ],
-  "provider_requests": 8,
+  "version": "0.3.0",
+  "normal_cli": {
+    "codex_version": "codex-cli 0.159.2",
+    "provider": "local fake Responses endpoint; no external model calls",
+    "passed": [
+      "plain CLI startup with no timer-specific runtime environment variables",
+      "installed skill is discovered by the real shared runtime",
+      "real CLI exec_command schedules its own CODEX_THREAD_ID",
+      "existing shared daemon discovered from another command invocation",
+      "inherited thread ID cannot bind self-scheduling to a different runtime process",
+      "idle -> new turn and active -> steer on the same turn ID",
+      "exact Unicode, quotes and multiline input from JSON configuration",
+      "idle-to-active race keeps the existing turn",
+      "pending task update and cancellation",
+      "two competing workers deliver exactly one user message",
+      "unloaded session is skipped without resume",
+      "shared runtime closed -> skipped; replacement cannot receive old timers"
+    ]
+  },
   "global_install": {
-    "version": "0.2.0",
+    "version": "0.3.0",
     "isolated_tool_and_codex_home": true,
     "passed": [
       "one installation command installs the global CLI and skill",

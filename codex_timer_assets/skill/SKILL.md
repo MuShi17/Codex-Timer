@@ -38,6 +38,8 @@ codex-timer list
 - 原 runtime 已关闭或会话已卸载：任务跳过。不要为了发送消息另起 runtime 或恢复历史会话。
 - `delivered` 表示 runtime 已接收，不代表消息中的工作已经完成。`unknown` 表示无法确认是否收到，避免自动重发。
 - 找不到命令或 runtime 时，用 `codex-timer doctor` 检查。命令安装后新开的终端才能获得更新后的 PATH。
-- 尚未连接可用 runtime 的普通 CLI 会话，需要用户在终端通过 `codex-timer launch` 启动，或通过 `codex-timer launch -- resume <UUID>` 恢复。不要在当前任务中偷偷替换运行中的 CLI，也不要向用户承诺已设置成功。
+- 普通 CLI 若使用共享 daemon，工具会自动接入已有服务，当前会话无需退出或重新启动。直接调用 `schedule` 即可。
+- `--no-daemon` 等独立模式和桌面端私有 runtime 无法接入；创建失败时如实说明。不要替换正在运行的 CLI 或为了接入启动其他 runtime。
+- CLI 窗口退出后共享 daemon 可能继续运行；只要原 runtime 和会话仍在，任务仍会执行。绑定的 daemon 关闭或替换后跳过，不向新服务转移任务。
 
 若用户要求周期任务，说明当前版本只支持一次性，并确认是否改为发送一次。

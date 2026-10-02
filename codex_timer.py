@@ -8,18 +8,17 @@ import json
 import math
 import os
 from pathlib import Path
+import queue
 import re
-import secrets
 import shutil
-import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
-BASE = Path(__file__).resolve().parent
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 
 def codex_home(explicit=None):
@@ -154,7 +153,7 @@ def doctor(state):
             "python": sys.executable, "codex": executable,
             "state": str(state), "skill": str(skill), "skill_installed": skill.is_file(),
             "thread_id": os.environ.get("CODEX_THREAD_ID"),
-            "runtime": os.environ.get("CODEX_TIMER_RUNTIME")}
+            "shared_control_socket_exists": (codex_home() / "app-server-control" / "app-server-control.sock").exists()}
 
 
 def duration(value):
@@ -171,6 +170,71 @@ def iso(timestamp):
     return dt.datetime.fromtimestamp(timestamp, dt.timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+class ProxySocket:
+    """Socket interface over Codex's transparent stdio-to-control-socket proxy.
+
+    The proxy carries HTTP/WebSocket bytes, not JSONL RPC messages. It only
+    connects to a running server and cannot start or resume a server.
+    """
+    def __init__(self, executable, socket_path, timeout):
+        self.timeout = timeout
+        self.buffer = b""
+        self.incoming = queue.Queue()
+        self.proc = subprocess.Popen(
+            [executable, "app-server", "proxy", "--sock", socket_path],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        try:
+            while True:
+                chunk = self.proc.stdout.read1(65536)
+                if not chunk:
+                    break
+                self.incoming.put(chunk)
+        except (OSError, ValueError):
+            pass
+        finally:
+            self.incoming.put(b"")
+
+    def send(self, data):
+        self.proc.stdin.write(data)
+        self.proc.stdin.flush()
+        return len(data)
+
+    def recv(self, size):
+        if not self.buffer:
+            try:
+                self.buffer = self.incoming.get(timeout=self.timeout)
+            except queue.Empty:
+                raise TimeoutError("Codex control socket proxy timed out")
+        chunk, self.buffer = self.buffer[:size], self.buffer[size:]
+        return chunk
+
+    def settimeout(self, timeout):
+        self.timeout = timeout
+
+    def gettimeout(self):
+        return self.timeout
+
+    def shutdown(self, how):
+        self.close()
+
+    def close(self):
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait(timeout=2)
+        for stream in (self.proc.stdin, self.proc.stdout):
+            with contextlib.suppress(OSError):
+                stream.close()
+
+
 class Rpc:
     def __init__(self, runtime, timeout=10):
         try:
@@ -180,13 +244,18 @@ class Rpc:
         self.timeout = timeout
         self.counter = 0
         self.events = []
+        self.proxy = None
         try:
+            check_daemon(runtime)
+            self.proxy = ProxySocket(runtime["codex"], runtime["socket_path"], timeout)
             self.ws = websocket.create_connection(
-                runtime["endpoint"], timeout=timeout,
-                header=["Authorization: Bearer " + runtime["token"]],
-                suppress_origin=True, http_no_proxy=["127.0.0.1", "localhost"],
+                "ws://localhost/", timeout=timeout, socket=self.proxy,
+                suppress_origin=True, http_no_proxy=["localhost"],
             )
+            check_daemon(runtime)
         except Exception as exc:
+            if self.proxy:
+                self.proxy.close()
             raise RuntimeGone("无法连接原 runtime；不会启动或恢复其他 runtime") from exc
         try:
             self.call("initialize", {
@@ -245,6 +314,8 @@ class Rpc:
     def close(self):
         with contextlib.suppress(Exception):
             self.ws.close()
+        if self.proxy:
+            self.proxy.close()
 
     def __enter__(self):
         return self
@@ -260,24 +331,89 @@ def runtime_record(path, expected_id=None):
         raise RuntimeGone("原 runtime 记录已不可用") from exc
     if not record.get("alive") or (expected_id and record.get("id") != expected_id):
         raise RuntimeGone("原 runtime 已关闭")
+    check_daemon(record)
     return record
 
 
-def locate_runtime(state, thread_id, explicit=None):
-    configured = explicit or os.environ.get("CODEX_TIMER_RUNTIME")
-    candidates = [Path(configured)] if configured else list((state / "runtimes").glob("*.json"))
-    matches = []
-    for path in candidates:
+def daemon_identity(record):
+    return {key: record.get(key) for key in ("pid", "processStartTime", "processIdentity", "linuxProcessIdentity", "executableIdentity")}
+
+
+def socket_identity(path):
+    path = Path(path)
+    stat = path.stat()
+    # Windows AF_UNIX entries are reparse points that GetFinalPathNameByHandle
+    # cannot resolve. Their file identity still changes when the socket is replaced.
+    return [str(path.absolute()), stat.st_ino, stat.st_mtime_ns]
+
+
+def owns_current_call(runtime):
+    """A persisted thread ID alone cannot identify the caller's live runtime."""
+    import psutil
+    try:
+        return any(parent.pid == runtime["daemon_pid"] and parent.create_time() == runtime["daemon_created"]
+                   for parent in psutil.Process().parents())
+    except psutil.Error:
+        return False
+
+
+def check_daemon(runtime):
+    try:
+        import psutil
+        current = read_json(runtime["daemon_pid_file"])
+        process = psutil.Process(runtime["daemon_pid"])
+        if (daemon_identity(current) != runtime["daemon_identity"]
+                or process.create_time() != runtime["daemon_created"]
+                or socket_identity(runtime["socket_path"]) != runtime["socket_identity"]
+                or not process.is_running() or process.status() == psutil.STATUS_ZOMBIE):
+            raise RuntimeGone("原共享 runtime 已关闭或被替换")
+    except RuntimeGone:
+        raise
+    except (OSError, ValueError, KeyError, psutil.Error) as exc:
+        raise RuntimeGone("原共享 runtime 已不可用") from exc
+
+
+def discover_daemon(state, thread_id=None, require_self=False):
+    """Passively discover the existing daemon; never invoke daemon start/queue."""
+    import psutil
+    home = codex_home()
+    socket_path = home / "app-server-control" / "app-server-control.sock"
+    if not socket_path.exists():
+        return None
+    for name in ("daemon.pid", "app-server.pid"):
+        pid_file = home / "app-server-daemon" / name
         try:
-            runtime = runtime_record(path)
-            with Rpc(runtime) as rpc:
-                if thread_id in rpc.loaded():
-                    matches.append((path.resolve(), runtime))
-        except RuntimeGone:
+            identity = daemon_identity(read_json(pid_file))
+            process = psutil.Process(identity["pid"])
+            executable = process.exe()
+            created = process.create_time()
+            socket_snapshot = socket_identity(socket_path)
+            runtime_id = hashlib.sha256(json.dumps([str(pid_file), identity, created, socket_snapshot], sort_keys=True).encode()).hexdigest()
+            runtime = {"id": runtime_id, "transport": "daemon", "alive": True,
+                       "endpoint": "ws://localhost/", "socket_path": str(socket_path),
+                       "codex": str(executable), "daemon_pid_file": str(pid_file),
+                       "daemon_pid": process.pid, "daemon_created": created,
+                       "daemon_identity": identity, "socket_identity": socket_snapshot}
+            if require_self and not owns_current_call(runtime):
+                continue
+            with Rpc(runtime, timeout=3) as rpc:
+                if thread_id is not None and thread_id not in rpc.loaded():
+                    continue
+            check_daemon(runtime)
+            # Immutable discovery records bind each task to its original process.
+            path = state / "runtimes" / (runtime["id"] + ".json")
+            write_json(path, runtime)
+            return path.resolve(), runtime
+        except (OSError, ValueError, KeyError, psutil.Error, RuntimeGone):
             continue
-    if len(matches) != 1:
-        raise TimerError("未找到唯一的、已加载当前会话的 runtime。请通过 launch 启动 Codex，或指定 --runtime；不会恢复历史会话。")
-    return matches[0]
+    return None
+
+
+def locate_runtime(state, thread_id, require_self=False):
+    found = discover_daemon(state, thread_id, require_self)
+    if not found:
+        raise TimerError("未找到已加载目标会话的共享 runtime。独立模式和桌面端的私有 runtime 无法接入；不会启动或恢复目标会话。")
+    return found
 
 
 def connect_db(state):
@@ -365,6 +501,8 @@ def detached_kwargs():
 
 def schedule(args, state):
     config = read_json(args.config) if args.config else {}
+    if not isinstance(config, dict) or set(config) - {"after", "message", "thread_id"}:
+        raise TimerError("配置文件必须是 JSON 对象，仅支持 after、message 和 thread_id")
     thread_id = args.thread or config.get("thread_id") or os.environ.get("CODEX_THREAD_ID")
     after = args.after if args.after is not None else config.get("after")
     message = args.message if args.message is not None else config.get("message")
@@ -373,7 +511,8 @@ def schedule(args, state):
     if not isinstance(message, str) or not message.strip():
         raise TimerError("消息必须是非空字符串")
     delay = duration(after)
-    path, runtime = locate_runtime(state, thread_id, args.runtime or config.get("runtime"))
+    path, runtime = locate_runtime(state, thread_id,
+                                   require_self=not (args.thread or config.get("thread_id")))
     task_id = str(uuid.uuid4())
     now = time.time()
     with connect_db(state) as conn:
@@ -457,113 +596,6 @@ def edit_task(args, state):
         emit(task_view(conn.execute("SELECT * FROM tasks WHERE id=?", (args.id,)).fetchone()))
 
 
-def start_runtime(state, codex=None, extra_server_args=None, env_overrides=None):
-    executable = codex or os.environ.get("CODEX_CLI_PATH") or shutil.which("codex")
-    if not executable:
-        raise TimerError("未找到 codex 可执行文件")
-    runtime_id = uuid.uuid4().hex
-    directory = state / "runtimes"
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / (runtime_id + ".json")
-    token = secrets.token_urlsafe(32)
-    token_path = directory / (runtime_id + ".token")
-    token_path.write_text(token, encoding="utf-8")
-    with contextlib.suppress(OSError):
-        token_path.chmod(0o600)
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    endpoint = "ws://127.0.0.1:" + str(port)
-    env = os.environ.copy()
-    env.update(env_overrides or {})
-    env["CODEX_TIMER_RUNTIME"] = str(path.resolve())
-    env["CODEX_TIMER_STATE"] = str(state.resolve())
-    env["CODEX_TIMER_SCRIPT"] = str(Path(__file__).resolve())
-    # Preserve command discovery even when the launching shell has a custom PATH.
-    timer_command = shutil.which("codex-timer")
-    if timer_command:
-        env["PATH"] = str(Path(timer_command).parent) + os.pathsep + env.get("PATH", "")
-    env["CODEX_TIMER_AUTH_TOKEN"] = token
-    log_path = directory / (runtime_id + ".log")
-    with log_path.open("ab") as log:
-        proc = subprocess.Popen([executable, *(extra_server_args or []), "app-server", "--listen", endpoint,
-                                 "--ws-auth", "capability-token", "--ws-token-file", str(token_path.resolve())],
-                                stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env,
-                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-    runtime = {"id": runtime_id, "endpoint": endpoint, "token": token, "alive": True,
-               "pid": proc.pid, "started": time.time()}
-    write_json(path, runtime)
-    ready = False
-    try:
-        for _ in range(100):
-            if proc.poll() is not None:
-                break
-            try:
-                with Rpc(runtime, timeout=1):
-                    ready = True
-                    break
-            except RuntimeGone:
-                time.sleep(0.1)
-    except BaseException:
-        stop_runtime(proc, path)
-        raise
-    if not ready:
-        stop_runtime(proc, path)
-        raise TimerError("runtime 启动失败，查看 " + str(log_path))
-    return proc, path, runtime, env, executable
-
-
-def stop_runtime(proc, path):
-    try:
-        runtime = read_json(path)
-        runtime["alive"] = False
-        runtime["stopped"] = time.time()
-        write_json(path, runtime)
-    finally:
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-        with contextlib.suppress(OSError):
-            Path(path).with_suffix(".token").unlink()
-        # Do not keep a usable local control token after shutdown.
-        with contextlib.suppress(OSError, ValueError):
-            runtime = read_json(path)
-            runtime.pop("token", None)
-            write_json(path, runtime)
-
-
-def launch(args, state):
-    extra = args.codex_args
-    if extra and extra[0] == "--":
-        extra = extra[1:]
-    if any(v in extra for v in ("--remote", "--remote-auth-token-env", "--no-daemon")):
-        raise TimerError("launch 已管理 runtime 连接，请勿传入 --remote、--remote-auth-token-env 或 --no-daemon")
-    # Explicit CLI config overrides must also reach the shared runtime.
-    configs = []
-    for i, value in enumerate(extra):
-        if value in ("-c", "--config") and i + 1 < len(extra):
-            configs.extend(["-c", extra[i + 1]])
-    proc, path, runtime, env, executable = start_runtime(state, extra_server_args=configs)
-    try:
-        cli = subprocess.Popen([executable, "--remote", runtime["endpoint"],
-                                "--remote-auth-token-env", "CODEX_TIMER_AUTH_TOKEN", *extra], env=env)
-        try:
-            return cli.wait()
-        except KeyboardInterrupt:
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                cli.wait(timeout=3)
-            if cli.poll() is None:
-                cli.terminate()
-                cli.wait(timeout=5)
-            return 130
-    finally:
-        stop_runtime(proc, path)
-
-
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -573,13 +605,10 @@ def main():
     parser.add_argument("--version", action="version", version="codex-timer " + VERSION)
     parser.add_argument("--state", default=str(default_state()), help="任务和 runtime 记录目录，默认 $CODEX_HOME/codex-timer")
     commands = parser.add_subparsers(dest="command", required=True)
-    p = commands.add_parser("launch", help="启动可接收定时消息的 Codex CLI")
-    p.add_argument("codex_args", nargs=argparse.REMAINDER)
     p = commands.add_parser("schedule", help="创建一次性任务，后台等待后立即返回")
     p.add_argument("--after", help="例如 75m、30s、2h")
     p.add_argument("--message")
     p.add_argument("--thread", help="默认使用当前 CODEX_THREAD_ID")
-    p.add_argument("--runtime", help="默认自动识别原 runtime")
     p.add_argument("--config", help="JSON 配置文件")
     p = commands.add_parser("update", help="调整尚未触发任务的时间或内容")
     p.add_argument("id")
@@ -592,7 +621,6 @@ def main():
     p = commands.add_parser("status", help="查询一个任务")
     p.add_argument("id")
     p = commands.add_parser("threads", help="列出当前 runtime 已加载的会话")
-    p.add_argument("--runtime", default=os.environ.get("CODEX_TIMER_RUNTIME"))
     p = commands.add_parser("install-skill", help="安装或更新全局 codex-timer skill")
     p.add_argument("--codex-home", help="默认 CODEX_HOME 或 ~/.codex")
     p.add_argument("--force", action="store_true", help="替换同名未管理 skill，备份被覆盖的文件")
@@ -604,8 +632,6 @@ def main():
     args = parser.parse_args()
     state = Path(args.state).resolve()
     try:
-        if args.command == "launch":
-            return launch(args, state)
         if args.command == "install-skill":
             emit(install_skill(args.codex_home, args.force))
         elif args.command == "uninstall-skill":
@@ -619,12 +645,17 @@ def main():
         elif args.command == "_worker":
             worker(state, args.id)
         elif args.command == "threads":
-            candidates = [Path(args.runtime)] if args.runtime else list((state / "runtimes").glob("*.json"))
+            discovered = discover_daemon(state)
+            candidates = [discovered[0]] if discovered else []
             found = []
+            seen = set()
             for path in candidates:
                 try:
                     with Rpc(runtime_record(path)) as rpc:
                         for thread_id in sorted(rpc.loaded()):
+                            if thread_id in seen:
+                                continue
+                            seen.add(thread_id)
                             thread = rpc.call("thread/read", {"threadId": thread_id})["thread"]
                             found.append({"id": thread_id, "name": thread.get("name"),
                                           "status": thread["status"], "runtime": str(path)})

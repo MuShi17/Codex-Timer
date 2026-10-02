@@ -33,33 +33,27 @@ codex-timer doctor
 
 普通 `pip install .` 或 `uv tool install .` 只安装 Python 包，不会自动写入 skill。要一次完成两项安装，使用 `python install.py`；手动安装包后可用 `codex-timer install-skill` 补齐 skill。
 
-## 在任意项目目录启动 Codex
+## 普通 Codex 会话直接使用
+
+正常启动 Codex 即可：
 
 ```text
-codex-timer launch
+codex
 ```
 
-恢复已有会话：
+对于已经启动、连接到本机共享 daemon 的 CLI 会话，无需退出或重新启动。在会话中让 Codex 调用 `codex-timer schedule`，工具会读取 `CODEX_THREAD_ID`，通过已有控制 socket 找到该会话的 runtime。
 
-```text
-codex-timer launch -- resume <会话UUID>
-```
+接入过程只连接现有服务，不执行 daemon start、queue 或 resume。每个任务绑定创建时的 daemon 进程和启动时间；服务退出或被替换后，旧任务跳过。
 
-传入其他 CLI 参数：
+本版本在 Windows、完整 npm 安装的 Codex CLI 0.159.2 上验证了普通启动流程。`--no-daemon`、禁用共享服务、部分命令行配置覆盖、管理员启动或桌面应用的私有 runtime 可能没有可接入的共享服务。此时创建任务会明确失败，不会自动重启 Codex。CLI 和桌面端可能看到同一会话记录，但并不因此共享同一个运行进程。
 
-```text
-codex-timer launch -- -C <项目目录>
-```
+关闭 CLI 窗口不一定关闭共享 daemon。只要原 runtime 仍在且会话仍加载，任务会继续；daemon 关闭后才按 runtime 关闭规则跳过。
 
-启动入口让交互式 CLI 和定时工具连接到同一个 runtime。退出该 CLI 会关闭本次 runtime，待发送任务会跳过。runtime 仅监听本机并需要随机令牌；不会修改 Codex 的登录信息或默认执行权限。
-
-**仍需通过 `codex-timer launch` 启动或恢复 CLI。**全局安装和 skill 解决命令发现与使用指导，但普通 CLI/桌面端若没有共享控制入口，无法直接向其当前任务追加输入。工具不会把接入失败伪装成任务创建成功。
-
-底层接口来自 [Codex App Server 官方文档](https://learn.chatgpt.com/docs/app-server)。WebSocket 传输仍属实验性；本版本在 Windows、Codex CLI 0.159.2 上验证。
+底层接口来自 [Codex App Server 官方文档](https://learn.chatgpt.com/docs/app-server)。本版本依赖现有共享 daemon 的控制接口。
 
 ## 让 Codex 自己设置定时消息
 
-在上述会话中可以直接说：
+在普通的共享 daemon 会话中，可以直接说：
 
 > 75 分钟后，向本会话发送“请检查实验结果”。
 
@@ -112,7 +106,7 @@ codex-timer schedule --thread <会话UUID> --after 75m --message "请检查实�
 codex-timer schedule --config <配置文件路径>
 ```
 
-可选字段为 `thread_id` 和 `runtime`；省略时使用当前会话和 runtime。命令行参数覆盖配置文件。修改配置只影响下次创建；已创建任务使用 `update` 修改。
+可选字段为 `thread_id`；省略时使用当前会话。命令行参数覆盖配置文件。修改配置只影响下次创建；已创建任务使用 `update` 修改。
 
 ## Skill 安装、升级和移除
 
@@ -145,7 +139,7 @@ uv tool uninstall codex-timer
 
 ## 数据与发送状态
 
-默认数据目录为 `$CODEX_HOME/codex-timer/`，未设置 `CODEX_HOME` 时是 `~/.codex/codex-timer/`。任务写入 `tasks.sqlite3`，runtime 记录存于 `runtimes/`。源码目录和当前工作目录不会影响任务位置。可通过命令行开头的 `--state <目录>` 或 `CODEX_TIMER_STATE` 覆盖；启动的 runtime 会沿用该目录。
+默认数据目录为 `$CODEX_HOME/codex-timer/`，未设置 `CODEX_HOME` 时是 `~/.codex/codex-timer/`。任务写入 `tasks.sqlite3`，runtime 记录存于 `runtimes/`。源码目录和当前工作目录不会影响任务位置。可通过命令行开头的 `--state <目录>` 或 `CODEX_TIMER_STATE` 覆盖。
 
 | 状态 | 含义 |
 | --- | --- |
@@ -161,18 +155,21 @@ uv tool uninstall codex-timer
 
 ## 验证
 
+需要完整安装的 Codex CLI 和 uv。运行全局安装及普通 CLI 流程测试：
+
 ```text
 python tests/installed_workflow.py
 ```
 
-全局安装测试需要 uv 已可用。测试将安装、PATH、Codex 用户目录及缓存隔离到临时目录，不修改真实用户的技能或 shell PATH。它会验证安装后从其他目录执行、移动源码、skill 升级备份、冲突保护和移除，再通过已安装命令进行真实 runtime 集成测试。
+测试隔离工具、PATH、用户目录和缓存，不修改真实用户的 skill 或 shell 配置。它验证全局安装、从其他目录调用、移动源码、skill 升级备份和冲突保护，再使用已安装命令验证普通 CLI 会话的真实工具调用、空闲唤醒、忙碌追加、修改、取消、重复发送保护和 runtime 关闭。
 
-仅验证 runtime：
+只验证普通 CLI：
 
 ```text
-python tests/integration_timer.py
+python -m pip install ".[test]"
+python tests/normal_cli.py
 ```
 
-测试使用真实 Codex app-server 和本地模拟 Responses 服务，不调用外部模型。它验证 runtime 能发现安装的 skill，Codex 的真实 `exec_command` 能通过全局命令给自身设定任务，以及忙碌、空闲、修改、取消、重复进程竞争、卸载和关闭场景。
+Windows 测试使用 pywinpty，其他系统使用 pexpect。测试正常启动交互式 Codex，使用本地模拟 Responses 服务触发真实 `exec_command`；没有外部模型调用，也不会预先启动 timer 专用 runtime。若本机 `codex` 来自桌面应用的单文件副本，测试需设置 `CODEX_TIMER_TEST_CODEX` 指向完整安装的 CLI。直接使用 npm 包中的原生程序时，可额外设置 `CODEX_TIMER_TEST_PACKAGE_ROOT` 指向 `@openai/codex` 包目录。
 
 本机结果见 `verification.json`。尚未验证无 uv 环境的自动引导、真实 shell PATH 持久化更新、Linux/macOS，或真实模型的 75 分钟长测。
