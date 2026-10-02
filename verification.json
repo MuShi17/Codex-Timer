@@ -1,5 +1,5 @@
 {
-  "version": "0.3.0",
+  "version": "0.4.0",
   "normal_cli": {
     "codex_version": "codex-cli 0.159.2",
     "provider": "local fake Responses endpoint; no external model calls",
@@ -19,7 +19,7 @@
     ]
   },
   "global_install": {
-    "version": "0.3.0",
+    "version": "0.4.0",
     "isolated_tool_and_codex_home": true,
     "passed": [
       "one installation command installs the global CLI and skill",
@@ -29,13 +29,47 @@
       "managed upgrade backs up user edits",
       "unmanaged same-name skill is preserved unless explicitly replaced",
       "uninstall preserves edited skill files",
-      "installed CLI is used for scheduling, updates, cancellation and runtime self-invocation"
+      "installed CLI is used for scheduling, updates, cancellation and runtime self-invocation",
+      "desktop bridge is packaged and used from the installed wheel"
     ],
     "not_tested": [
       "automatic uv bootstrap on a machine without uv",
       "persistent shell PATH update",
       "Linux/macOS execution",
       "external real-model or 75-minute soak test"
+    ]
+  },
+  "desktop": {
+    "app_version": "26.928.2636.0 (Windows)",
+    "live_test": {
+      "message": "check",
+      "delay_seconds": 120,
+      "created": "2026-10-02T16:38:46+08:00",
+      "delivered": "2026-10-02T16:40:46+08:00",
+      "status": "delivered",
+      "method": "send_message_to_thread",
+      "source": "source CLI invoked inside the current desktop conversation",
+      "observations": [
+        "desktop pipe ownership and app-server ancestry verified",
+        "message arrived during the active task",
+        "active turn id before and after delivery was unchanged"
+      ]
+    },
+    "isolated_transport_tests": [
+      "native pipe framing including fragmented responses",
+      "exact Unicode, quotes and multiline input",
+      "idle and busy routing through the app tool (fixture)",
+      "unloaded and remote targets rejected before send",
+      "desktop failure never falls back to CLI daemon",
+      "disconnect, timeout, generic error and malformed acknowledgement -> unknown, no retry",
+      "competing workers deliver exactly once",
+      "original process closed or endpoint reused by a new process -> skipped",
+      "installed wheel contains and uses the desktop bridge"
+    ],
+    "not_tested": [
+      "live desktop idle wakeup",
+      "live desktop close/unload race between the status check and the app tool call",
+      "Linux/macOS desktop execution"
     ]
   }
 }

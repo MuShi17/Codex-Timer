@@ -10,7 +10,7 @@
 
 ## Clone 后全局安装
 
-需要 Python 3.9+ 和已安装、已登录的 Codex CLI。仓库的安装入口为：
+需要 Python 3.9+ 和已安装、已登录的 Codex CLI 或桌面应用。仓库的安装入口为：
 
 ```text
 git clone https://github.com/MuShi17/Codex-Timer.git codex-timer
@@ -45,15 +45,31 @@ codex
 
 接入过程只连接现有服务，不执行 daemon start、queue 或 resume。每个任务绑定创建时的 daemon 进程和启动时间；服务退出或被替换后，旧任务跳过。
 
-本版本在 Windows、完整 npm 安装的 Codex CLI 0.159.2 上验证了普通启动流程。`--no-daemon`、禁用共享服务、部分命令行配置覆盖、管理员启动或桌面应用的私有 runtime 可能没有可接入的共享服务。此时创建任务会明确失败，不会自动重启 Codex。CLI 和桌面端可能看到同一会话记录，但并不因此共享同一个运行进程。
+本版本在 Windows、完整 npm 安装的 Codex CLI 0.159.2 上验证了普通启动流程。`--no-daemon`、禁用共享服务、部分命令行配置覆盖或管理员启动可能没有可接入的共享服务。此时创建任务会明确失败，不会自动重启 Codex。CLI 和桌面端可能看到同一会话记录，但并不因此共享同一个运行进程。
 
 关闭 CLI 窗口不一定关闭共享 daemon。只要原 runtime 仍在且会话仍加载，任务会继续；daemon 关闭后才按 runtime 关闭规则跳过。
 
 底层接口来自 [Codex App Server 官方文档](https://learn.chatgpt.com/docs/app-server)。本版本依赖现有共享 daemon 的控制接口。
 
+## 已启动的桌面会话直接使用
+
+在 Codex 桌面应用的会话中调用相同命令，无需退出或重新启动：
+
+```text
+codex-timer schedule --after 2m --message "check"
+```
+
+工具自动识别应用提供的 `CODEX_APP_TOOLS_PIPE_PATH`，通过应用自身的 `read_thread`、`send_message_to_thread` 工具发送消息。桌面通道优先于 CLI daemon；桌面接入失败时不会把同一个历史会话恢复到 CLI。
+
+后台任务绑定创建时的桌面进程和私有 app-server 进程的 PID、启动时间及程序路径，并验证本地通道仍属于原进程。桌面应用或原 app-server 退出、重启后跳过任务；发送前读取目标状态，未加载的会话跳过。只支持本地 Codex 会话，不发送到云端或远程主机。
+
+桌面接入使用 Node.js，优先采用应用提供的 `CODEX_MCP_NODE_PATH`，其次使用 PATH 中的 `node`，不需要 npm 安装依赖。工具和桥接文件随 Python 包一起安装，源码目录移动后仍可使用。普通外部终端不会自动获得桌面通道，需从桌面 Codex 会话内部调用；桌面模式下 `threads` 只显示当前会话，显式 `--thread` 可指定同一实例中已加载的本地会话。
+
+桌面通道来自应用内置插件，尚非稳定的公开接口；应用版本改变时，接口可能变化。Windows Codex 桌面版 26.928.2636.0 上已实测两分钟延迟，并确认忙碌时消息进入同一回合。空闲发送使用同一个应用消息工具，已通过模拟通道测试，尚未实测真实桌面空闲唤醒。
+
 ## 让 Codex 自己设置定时消息
 
-在普通的共享 daemon 会话中，可以直接说：
+在 CLI 共享 daemon 会话或桌面会话中，可以直接说：
 
 > 75 分钟后，向本会话发送“请检查实验结果”。
 
@@ -172,4 +188,12 @@ python tests/normal_cli.py
 
 Windows 测试使用 pywinpty，其他系统使用 pexpect。测试正常启动交互式 Codex，使用本地模拟 Responses 服务触发真实 `exec_command`；没有外部模型调用，也不会预先启动 timer 专用 runtime。若本机 `codex` 来自桌面应用的单文件副本，测试需设置 `CODEX_TIMER_TEST_CODEX` 指向完整安装的 CLI。直接使用 npm 包中的原生程序时，可额外设置 `CODEX_TIMER_TEST_PACKAGE_ROOT` 指向 `@openai/codex` 包目录。
 
-本机结果见 `verification.json`。尚未验证无 uv 环境的自动引导、真实 shell PATH 持久化更新、Linux/macOS，或真实模型的 75 分钟长测。
+桌面传输的隔离测试（不连接真实应用，不发送真实会话消息）：
+
+```text
+python tests/desktop_transport.py
+```
+
+验证本地通道分片、消息原文、空闲/忙碌分支、未加载和远程会话拦截、发送结果不明时不重发、竞争进程只发送一次，以及原进程关闭或通道被新进程复用后跳过。全局安装测试还使用已安装包中的桌面桥接资源运行这些检查。
+
+本机结果见 `verification.json`。尚未验证无 uv 环境的自动引导、真实 shell PATH 持久化更新、Linux/macOS、真实桌面空闲唤醒，或真实模型的 75 分钟长测。

@@ -59,8 +59,8 @@ def install(args):
         run([uv, "tool", "update-shell"])
     print(json.dumps({"status": "installed", "command": str(executable), "skill": skill,
                       "source_required_after_install": False,
-                      "next": "普通 codex 共享 daemon 会话可直接调用 codex-timer schedule" if on_path else
-                              "重新打开终端后，普通 codex 共享 daemon 会话可直接调用 codex-timer schedule"},
+                      "next": "CLI 共享 daemon 或桌面会话可直接调用 codex-timer schedule" if on_path else
+                              "重新打开终端后，CLI 共享 daemon 或桌面会话可直接调用 codex-timer schedule"},
                      ensure_ascii=False, indent=2))
 
 

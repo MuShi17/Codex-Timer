@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 
 def codex_home(explicit=None):
@@ -153,6 +153,8 @@ def doctor(state):
             "python": sys.executable, "codex": executable,
             "state": str(state), "skill": str(skill), "skill_installed": skill.is_file(),
             "thread_id": os.environ.get("CODEX_THREAD_ID"),
+            "desktop_tools_available": bool(os.environ.get("CODEX_APP_TOOLS_PIPE_PATH")),
+            "desktop_node_available": bool(os.environ.get("CODEX_MCP_NODE_PATH") or shutil.which("node")),
             "shared_control_socket_exists": (codex_home() / "app-server-control" / "app-server-control.sock").exists()}
 
 
@@ -331,8 +333,214 @@ def runtime_record(path, expected_id=None):
         raise RuntimeGone("原 runtime 记录已不可用") from exc
     if not record.get("alive") or (expected_id and record.get("id") != expected_id):
         raise RuntimeGone("原 runtime 已关闭")
-    check_daemon(record)
+    check_runtime(record)
     return record
+
+
+def process_snapshot(process):
+    return {"pid": process.pid, "created": process.create_time(), "executable": process.exe()}
+
+
+def check_process(snapshot):
+    import psutil
+    process = psutil.Process(snapshot["pid"])
+    if (process_snapshot(process) != snapshot or not process.is_running()
+            or process.status() == psutil.STATUS_ZOMBIE):
+        raise RuntimeGone("原桌面 runtime 已关闭或被替换")
+
+
+def pipe_owner(pipe):
+    """Obtain the actual Windows pipe owner, without issuing an app tool call."""
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.GetNamedPipeServerProcessId.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.ULONG)]
+    kernel.GetNamedPipeServerProcessId.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.CreateFileW(pipe, 0xC0000000, 0, None, 3, 0, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise RuntimeGone("桌面消息通道不可用")
+    try:
+        pid = wintypes.ULONG()
+        if not kernel.GetNamedPipeServerProcessId(handle, ctypes.byref(pid)):
+            raise RuntimeGone("无法确认桌面消息通道的原进程")
+        return pid.value
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def check_runtime(runtime, channel=False):
+    if runtime.get("transport") != "desktop":
+        return check_daemon(runtime)
+    import psutil
+    try:
+        for snapshot in runtime["processes"]:
+            check_process(snapshot)
+        if channel:
+            if os.name == "nt":
+                if pipe_owner(runtime["pipe"]) != runtime["owner_pid"]:
+                    raise RuntimeGone("桌面消息通道已被替换")
+            elif socket_identity(runtime["pipe"]) != runtime["pipe_identity"]:
+                raise RuntimeGone("桌面消息通道已被替换")
+    except RuntimeGone:
+        raise
+    except (OSError, ValueError, KeyError, psutil.Error) as exc:
+        raise RuntimeGone("原桌面 runtime 已不可用") from exc
+
+
+class DesktopRpc:
+    """Use the app's own tools; never resume a thread through another server."""
+    def __init__(self, runtime, timeout=10):
+        self.runtime, self.timeout = runtime, timeout
+        check_runtime(runtime, channel=True)
+
+    def native(self, method, params, mutation=False):
+        check_runtime(self.runtime, channel=True)
+        request = {"pipe": self.runtime["pipe"], "timeoutMs": int(self.timeout * 1000),
+                   "rpc": {"id": uuid.uuid4().hex, "jsonrpc": "2.0", "method": method, "params": params}}
+        encoded = json.dumps(request, ensure_ascii=False)
+        if len(encoded.encode("utf-8")) > 8 * 1024 * 1024:
+            raise TimerError("桌面消息请求超过 8 MiB 通道限制")
+        helper = resources.files("codex_timer_assets").joinpath("desktop_bridge.mjs")
+        try:
+            with resources.as_file(helper) as path:
+                result = subprocess.run([self.runtime["node"], str(path)],
+                                        input=encoded,
+                                        capture_output=True, text=True, encoding="utf-8",
+                                        timeout=self.timeout + 3,
+                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            response = json.loads(result.stdout)
+            if not isinstance(response, dict) or not isinstance(response.get("response", {}), dict):
+                raise ValueError("Invalid desktop RPC envelope")
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            if mutation:
+                raise DeliveryUnknown("桌面发送结果无法确认，不会自动重发") from exc
+            raise RuntimeGone("无法读取原桌面 runtime") from exc
+        error = response.get("error") or response.get("response", {}).get("error")
+        if error:
+            # The app's generic error can also occur after accepting a message.
+            if mutation and response.get("sent"):
+                raise DeliveryUnknown("桌面发送后未收到成功确认，不会自动重发：" + str(error))
+            raise RuntimeGone("桌面消息通道不可用：" + str(error))
+        envelope = response.get("response", {})
+        if "result" not in envelope:
+            if mutation and response.get("sent"):
+                raise DeliveryUnknown("桌面发送确认缺少结果，不会自动重发")
+            raise RuntimeGone("桌面通道返回无效结果")
+        return envelope["result"]
+
+    def tool(self, name, arguments, mutation=False):
+        result = self.native("tools/call", {
+            "namespace": "codex_app", "tool": name, "callerSource": "codex",
+            "threadId": self.runtime["caller_thread"],
+            "turnId": "mcp-turn-" + uuid.uuid4().hex,
+            "callId": "mcp-call-" + uuid.uuid4().hex,
+            "arguments": arguments,
+        }, mutation=mutation)
+        if not isinstance(result, dict):
+            if mutation:
+                raise DeliveryUnknown("桌面发送确认格式无法识别，不会自动重发")
+            raise TimerError("桌面工具返回格式无法识别")
+        text = "\n".join(item["text"] for item in result.get("contentItems", [])
+                         if isinstance(item, dict) and item.get("type") == "inputText" and isinstance(item.get("text"), str))
+        if result.get("success") is not True:
+            if mutation:
+                raise DeliveryUnknown("桌面工具未确认送达，不会自动重发：" + text[:500])
+            raise TimerError("桌面工具读取失败：" + text[:500])
+        try:
+            return json.loads(text)
+        except ValueError as exc:
+            if mutation:
+                raise DeliveryUnknown("桌面发送确认格式无法识别，不会自动重发") from exc
+            raise TimerError("桌面工具返回格式无法识别") from exc
+
+    def read(self, thread_id):
+        data = self.tool("read_thread", {"threadId": thread_id, "hostId": "local", "turnLimit": 1,
+                                         "includeOutputs": False, "maxOutputCharsPerItem": 0})
+        if not isinstance(data, dict) or not isinstance(data.get("thread"), dict):
+            raise TimerError("桌面会话读取返回格式无法识别")
+        thread = data.get("thread", {})
+        if thread.get("id") != thread_id or thread.get("hostId") != "local" or thread.get("kind") != "codex":
+            raise TimerError("只能接入当前桌面实例中的本地 Codex 会话")
+        if thread.get("status", {}).get("type") not in ("active", "idle"):
+            raise RuntimeGone("目标会话未在原桌面 runtime 中加载")
+        return data
+
+    def dispatch(self, thread_id, message):
+        before = self.read(thread_id)
+        check_runtime(self.runtime, channel=True)
+        result = self.tool("send_message_to_thread", {"threadId": thread_id, "hostId": "local", "prompt": message},
+                           mutation=True)
+        turn_id = result.get("turnId") if isinstance(result, dict) else None
+        if not turn_id and before["thread"]["status"]["type"] == "active":
+            # Some app acknowledgements omit the turn id. Only record it if a
+            # post-acceptance read confirms the original turn is still active.
+            prior = next((t["id"] for t in before.get("turns", []) if t.get("status") == "inProgress"), None)
+            with contextlib.suppress(TimerError):
+                after = self.read(thread_id)
+                if prior and any(t.get("id") == prior and t.get("status") == "inProgress" for t in after.get("turns", [])):
+                    turn_id = prior
+        return "send_message_to_thread", turn_id
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+def connect_runtime(runtime, timeout=10):
+    return DesktopRpc(runtime, timeout) if runtime.get("transport") == "desktop" else Rpc(runtime, timeout)
+
+
+def discover_desktop(state, thread_id=None):
+    import psutil
+    pipe = os.environ.get("CODEX_APP_TOOLS_PIPE_PATH")
+    caller = os.environ.get("CODEX_THREAD_ID")
+    if not pipe or not caller:
+        raise TimerError("桌面接入需要在 Codex 桌面会话内调用")
+    node = os.environ.get("CODEX_MCP_NODE_PATH") or shutil.which("node")
+    if not node or not Path(node).is_file():
+        raise TimerError("桌面接入找不到 Node.js 运行程序")
+    try:
+        parents = psutil.Process().parents()
+        server = next((p for p in parents if "app-server" in p.cmdline() and Path(p.exe()).stem.lower() == "codex"), None)
+    except psutil.Error as exc:
+        raise RuntimeGone("无法确认当前桌面 runtime 的原进程") from exc
+    if not server:
+        raise TimerError("当前调用不属于正在运行的桌面 Codex runtime")
+    if os.name == "nt":
+        owner_pid = pipe_owner(pipe)
+        owner = next((p for p in parents if p.pid == owner_pid), None)
+        if not owner:
+            raise TimerError("桌面通道不属于当前进程的原桌面实例")
+        pipe_identity = None
+    else:
+        owner = server.parent()
+        owner_pid, pipe_identity = owner.pid, socket_identity(pipe)
+    try:
+        processes = [process_snapshot(server), process_snapshot(owner)]
+    except psutil.Error as exc:
+        raise RuntimeGone("原桌面 runtime 已不可用") from exc
+    runtime = {"transport": "desktop", "alive": True, "pipe": pipe, "owner_pid": owner_pid,
+               "pipe_identity": pipe_identity, "processes": processes,
+               "node": str(Path(node).resolve()), "caller_thread": caller}
+    runtime["id"] = hashlib.sha256(json.dumps(runtime, sort_keys=True).encode()).hexdigest()
+    with DesktopRpc(runtime, timeout=5) as rpc:
+        catalog = rpc.native("tools/list", {"threadStartKind": "all"})
+        names = {t["name"] for t in catalog.get("tools", []) if t.get("namespace") == "codex_app"}
+        if not {"read_thread", "send_message_to_thread"} <= names:
+            raise TimerError("当前桌面版本没有所需的会话消息工具")
+        rpc.read(thread_id or caller)
+    path = state / "runtimes" / (runtime["id"] + ".json")
+    write_json(path, runtime)
+    return path.resolve(), runtime
 
 
 def daemon_identity(record):
@@ -410,9 +618,11 @@ def discover_daemon(state, thread_id=None, require_self=False):
 
 
 def locate_runtime(state, thread_id, require_self=False):
+    if os.environ.get("CODEX_APP_TOOLS_PIPE_PATH"):
+        return discover_desktop(state, thread_id)
     found = discover_daemon(state, thread_id, require_self)
     if not found:
-        raise TimerError("未找到已加载目标会话的共享 runtime。独立模式和桌面端的私有 runtime 无法接入；不会启动或恢复目标会话。")
+        raise TimerError("未找到已加载目标会话的 runtime。CLI 需要共享 daemon；桌面端需在应用会话内调用。不会启动或恢复目标会话。")
     return found
 
 
@@ -458,6 +668,8 @@ def active_turn(rpc, thread_id):
 
 
 def dispatch(rpc, thread_id, message, task_id):
+    if isinstance(rpc, DesktopRpc):
+        return rpc.dispatch(thread_id, message)
     for _ in range(3):
         if thread_id not in rpc.loaded():
             raise RuntimeGone("目标会话已经从原 runtime 卸载")
@@ -556,7 +768,7 @@ def worker(state, task_id):
             continue
         try:
             runtime = runtime_record(row["runtime_path"], row["runtime_id"])
-            with Rpc(runtime) as rpc:
+            with connect_runtime(runtime) as rpc:
                 # Atomic claim also checks due to handle an edit racing the worker.
                 with connect_db(state) as conn:
                     changed = conn.execute("""UPDATE tasks SET status='sending'
@@ -645,6 +857,11 @@ def main():
         elif args.command == "_worker":
             worker(state, args.id)
         elif args.command == "threads":
+            if os.environ.get("CODEX_APP_TOOLS_PIPE_PATH"):
+                path, runtime = discover_desktop(state)
+                with DesktopRpc(runtime) as rpc:
+                    emit([{**rpc.read(runtime["caller_thread"])["thread"], "runtime": str(path)}])
+                return 0
             discovered = discover_daemon(state)
             candidates = [discovered[0]] if discovered else []
             found = []

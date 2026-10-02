@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-timer"
-version = "0.3.0"
-description = "One-shot delayed messages to a live Codex CLI session"
+version = "0.4.0"
+description = "One-shot delayed messages to a live Codex CLI or desktop session"
 requires-python = ">=3.9"
 readme = "README.md"
 dependencies = ["websocket-client>=1.8,<2", "psutil>=5.9,<8"]
@@ -22,4 +22,4 @@ packages = ["codex_timer_assets"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-codex_timer_assets = ["skill/SKILL.md", "skill/agents/openai.yaml"]
+codex_timer_assets = ["skill/SKILL.md", "skill/agents/openai.yaml", "desktop_bridge.mjs"]

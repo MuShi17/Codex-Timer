@@ -39,7 +39,9 @@ codex-timer list
 - `delivered` 表示 runtime 已接收，不代表消息中的工作已经完成。`unknown` 表示无法确认是否收到，避免自动重发。
 - 找不到命令或 runtime 时，用 `codex-timer doctor` 检查。命令安装后新开的终端才能获得更新后的 PATH。
 - 普通 CLI 若使用共享 daemon，工具会自动接入已有服务，当前会话无需退出或重新启动。直接调用 `schedule` 即可。
-- `--no-daemon` 等独立模式和桌面端私有 runtime 无法接入；创建失败时如实说明。不要替换正在运行的 CLI 或为了接入启动其他 runtime。
+- 桌面应用中也可直接调用 `schedule`，工具通过应用提供的本地消息通道接入当前实例。无需重新启动会话。桌面通道优先于 CLI daemon，接入失败时不会转发到另一服务。
+- 桌面端需要当前会话提供的 `CODEX_APP_TOOLS_PIPE_PATH` 和 Node.js（优先使用应用提供的 `CODEX_MCP_NODE_PATH`）；不要从别的会话或历史任务复制通道地址。`threads` 在桌面端只显示当前会话。
+- CLI 的 `--no-daemon` 等独立模式无法接入；创建失败时如实说明。不要替换正在运行的 CLI 或为了接入启动其他 runtime。
 - CLI 窗口退出后共享 daemon 可能继续运行；只要原 runtime 和会话仍在，任务仍会执行。绑定的 daemon 关闭或替换后跳过，不向新服务转移任务。
 
 若用户要求周期任务，说明当前版本只支持一次性，并确认是否改为发送一次。

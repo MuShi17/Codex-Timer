@@ -31,6 +31,9 @@ def main():
         home = root / 'h'; home.mkdir()
         state = home / 'codex-timer'
         env = os.environ.copy()
+        for key in list(env):
+            if key.startswith("CODEX_APP_TOOLS_") or key == "CODEX_MCP_NODE_PATH":
+                env.pop(key)
         for key in ('CODEX_TIMER_RUNTIME', 'CODEX_TIMER_STATE', 'CODEX_THREAD_ID',
                     'CODEX_SESSION_ID', 'CODEX_EXEC_SERVER_URL', 'CODEX_CLI_PATH'):
             env.pop(key, None)
