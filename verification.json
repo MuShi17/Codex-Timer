@@ -67,9 +67,24 @@
       "installed wheel contains and uses the desktop bridge"
     ],
     "not_tested": [
-      "live desktop idle wakeup",
       "live desktop close/unload race between the status check and the app tool call",
       "Linux/macOS desktop execution"
-    ]
+    ],
+    "live_idle_test": {
+      "message": "check",
+      "delay_seconds": 3600,
+      "created": "2026-10-02T17:10:56+08:00",
+      "due": "2026-10-02T18:10:56+08:00",
+      "delivered": "2026-10-02T18:10:58+08:00",
+      "status": "delivered",
+      "method": "send_message_to_thread",
+      "previous_turn_completed": "2026-10-02T17:32:24+08:00",
+      "new_turn_started": "2026-10-02T18:10:57+08:00",
+      "observations": [
+        "previous turn completed before the scheduled time",
+        "message woke the idle desktop conversation and started a different turn",
+        "delivery acknowledgement arrived approximately two seconds after the scheduled time"
+      ]
+    }
   }
 }

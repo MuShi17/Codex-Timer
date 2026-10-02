@@ -62,4 +62,4 @@ codex-timer cancel <任务ID>
 - 找不到命令时检查 PATH。使用 uv 安装的工具可通过 `uv tool dir --bin` 定位全局可执行文件，再用绝对路径调用；不需要找 clone 目录。
 - 命令可用但创建失败时运行 `codex-timer doctor`，结合错误排查会话 ID、运行实例和桌面 Node.js 环境。如实报告失败，不替换实例或恢复历史会话。
 - `status` 中的 `detail` 提供失败原因；`skipped` 表示原 runtime 不可用或会话已卸载，不表示消息已发送。
-- 当前只有 Windows 的实测记录；macOS/Linux 未实测，真实桌面空闲唤醒也未实测。
+- 当前只有 Windows 的实测记录，已覆盖桌面忙碌追加和空闲唤醒；macOS/Linux 未实测。
