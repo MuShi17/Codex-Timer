@@ -1,0 +1,38 @@
+{
+  "codex_version": "codex-cli 0.159.2",
+  "provider": "local fake Responses endpoint; no external model calls",
+  "passed": [
+    "installed skill in CODEX_HOME/skills is discovered by the real Codex runtime",
+    "idle -> turn/start, detached worker, automatic thread ID, exact Unicode message",
+    "active -> turn/steer on the same turn ID",
+    "idle-to-active race: turn/start steers the existing turn without interrupting it",
+    "pending task edits affect the original detached worker",
+    "cancellation prevents delivery",
+    "two competing workers deliver only one user message",
+    "runtime exec_command schedules itself: CODEX_THREAD_ID and runtime lookup work; worker survives tool completion",
+    "unloaded thread is skipped, never resumed",
+    "runtime shutdown -> skipped, no new runtime",
+    "abrupt endpoint loss is detected without starting a replacement runtime"
+  ],
+  "provider_requests": 8,
+  "global_install": {
+    "version": "0.2.0",
+    "isolated_tool_and_codex_home": true,
+    "passed": [
+      "one installation command installs the global CLI and skill",
+      "bare codex-timer command works from an unrelated project directory",
+      "installed CLI and skill resources work after moving the cloned source",
+      "default state belongs to the user, independent of source and working directory",
+      "managed upgrade backs up user edits",
+      "unmanaged same-name skill is preserved unless explicitly replaced",
+      "uninstall preserves edited skill files",
+      "installed CLI is used for scheduling, updates, cancellation and runtime self-invocation"
+    ],
+    "not_tested": [
+      "automatic uv bootstrap on a machine without uv",
+      "persistent shell PATH update",
+      "Linux/macOS execution",
+      "external real-model or 75-minute soak test"
+    ]
+  }
+}

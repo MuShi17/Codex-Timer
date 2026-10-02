@@ -1,0 +1,4 @@
+include install.py
+include task.example.json
+recursive-include codex_timer_assets *.md *.yaml
+recursive-include tests *.py

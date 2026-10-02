@@ -1,0 +1,14 @@
+.state/
+__pycache__/
+*.pyc
+.test-work/
+*.egg-info/
+build/
+dist/
+.env
+.env.*
+!.env.example
+*.sqlite3
+*.sqlite3-*
+*.log
+*.token
