@@ -217,32 +217,3 @@ uv tool uninstall codex-timer
 | `unknown` | 无法确认是否收到，不自动重发 |
 
 首版没有周期任务、开机自启或后台计时进程崩溃后的自动恢复。电脑休眠时不会发送；恢复后若原 runtime 仍在，任务会尽快执行一次。调度不是硬实时。计时进程被单独杀死时，任务可能停留在 `pending` 或 `sending`，可根据 `worker_pid` 排查；不要手工重发 `sending` 或 `unknown` 任务。
-
-## 验证
-
-需要完整安装的 Codex CLI 和 uv。运行全局安装及普通 CLI 流程测试：
-
-```text
-python tests/installed_workflow.py
-```
-
-测试隔离工具、PATH、用户目录和缓存，不修改真实用户的 skill 或 shell 配置。它验证全局安装、从其他目录调用、移动源码、skill 升级备份和冲突保护，再使用已安装命令验证普通 CLI 会话的真实工具调用、空闲唤醒、忙碌追加、修改、取消、重复发送保护和 runtime 关闭。
-
-只验证普通 CLI：
-
-```text
-python -m pip install ".[test]"
-python tests/normal_cli.py
-```
-
-Windows 测试使用 pywinpty，其他系统使用 pexpect。测试正常启动交互式 Codex，使用本地模拟 Responses 服务触发真实 `exec_command`；没有外部模型调用，也不会预先启动 timer 专用 runtime。若本机 `codex` 来自桌面应用的单文件副本，测试需设置 `CODEX_TIMER_TEST_CODEX` 指向完整安装的 CLI。直接使用 npm 包中的原生程序时，可额外设置 `CODEX_TIMER_TEST_PACKAGE_ROOT` 指向 `@openai/codex` 包目录。
-
-桌面传输的隔离测试（不连接真实应用，不发送真实会话消息）：
-
-```text
-python tests/desktop_transport.py
-```
-
-验证本地通道分片、消息原文、空闲/忙碌分支、未加载和远程会话拦截、发送结果不明时不重发、竞争进程只发送一次，以及原进程关闭或通道被新进程复用后跳过。全局安装测试还使用已安装包中的桌面桥接资源运行这些检查。
-
-本机结果见 `verification.json`。尚未验证无 uv 环境的自动引导、真实 shell PATH 持久化更新、Linux/macOS，或真实模型的 75 分钟长测。
