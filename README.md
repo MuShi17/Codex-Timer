@@ -93,41 +93,18 @@ codex-timer schedule --after 75m --message "请检查实验结果"
 
 skill 会指导 Codex 正确引用消息、报告创建结果，并避免误用父会话、恢复已关闭 runtime 或重复发送结果不明的消息。Codex 支持根据描述自动选择 skill，也支持显式调用；如果安装后未显示，可重启 Codex。[官方技能说明](https://learn.chatgpt.com/docs/build-skills)
 
-## 运行环境和接入方式
+## 运行环境
 
-### 普通 Codex CLI 会话
+在已经运行的 Codex CLI 或桌面会话中使用同一个 `codex-timer` 命令即可，无需选择接入模式，也无需退出或重新启动 Codex。工具根据当前环境自动连接原运行实例，只发送到已加载的本地会话。
 
-正常启动 Codex 即可：
+任务绑定创建时的运行实例；原实例退出、重启或被替换，或目标会话卸载后，任务会跳过。工具不会启动新实例或恢复历史会话。CLI 和桌面端即使能看到同一会话记录，也不代表共享同一个运行进程。
 
-```text
-codex
-```
+不同环境的连接条件如下，通常无需手动配置：
 
-对于已经启动、连接到本机共享 daemon 的 CLI 会话，无需退出或重新启动。在会话中让 Codex 调用 `codex-timer schedule`，工具会读取 `CODEX_THREAD_ID`，通过已有控制 socket 找到该会话的 runtime。
+- **CLI**：需连接已有的本机共享 daemon。`--no-daemon`、禁用共享服务、部分配置覆盖或管理员启动可能无法接入，此时创建任务会明确失败。关闭 CLI 窗口不一定关闭 daemon；只要原 runtime 和会话仍在，任务仍可发送。连接使用已有控制 socket，接口参考 [Codex App Server 官方文档](https://learn.chatgpt.com/docs/app-server)。
+- **桌面应用**：需从应用会话内部调用，使用应用提供的 `CODEX_APP_TOOLS_PIPE_PATH`。需要 Node.js，优先采用 `CODEX_MCP_NODE_PATH`，其次使用 PATH 中的 `node`，无需安装 npm 依赖。桌面通道优先，连接失败时不会转移到 CLI。普通外部终端不会自动获得桌面通道；`threads` 在桌面环境只显示当前会话，显式 `--thread` 可指定同一实例中已加载的本地会话。该通道来自应用内置插件，尚非稳定公开接口，应用升级可能影响接入。
 
-接入过程只连接现有服务，不执行 daemon start、queue 或 resume。每个任务绑定创建时的 daemon 进程和启动时间；服务退出或被替换后，旧任务跳过。
-
-本版本在 Windows、完整 npm 安装的 Codex CLI 0.159.2 上验证了普通启动流程。`--no-daemon`、禁用共享服务、部分命令行配置覆盖或管理员启动可能没有可接入的共享服务。此时创建任务会明确失败，不会自动重启 Codex。CLI 和桌面端可能看到同一会话记录，但并不因此共享同一个运行进程。
-
-关闭 CLI 窗口不一定关闭共享 daemon。只要原 runtime 仍在且会话仍加载，任务会继续；daemon 关闭后才按 runtime 关闭规则跳过。
-
-底层接口来自 [Codex App Server 官方文档](https://learn.chatgpt.com/docs/app-server)。本版本依赖现有共享 daemon 的控制接口。
-
-### 已启动的桌面会话
-
-在 Codex 桌面应用的会话中调用相同命令，无需退出或重新启动：
-
-```text
-codex-timer schedule --after 2m --message "check"
-```
-
-工具自动识别应用提供的 `CODEX_APP_TOOLS_PIPE_PATH`，通过应用自身的 `read_thread`、`send_message_to_thread` 工具发送消息。桌面通道优先于 CLI daemon；桌面接入失败时不会把同一个历史会话恢复到 CLI。
-
-后台任务绑定创建时的桌面进程和私有 app-server 进程的 PID、启动时间及程序路径，并验证本地通道仍属于原进程。桌面应用或原 app-server 退出、重启后跳过任务；发送前读取目标状态，未加载的会话跳过。只支持本地 Codex 会话，不发送到云端或远程主机。
-
-桌面接入使用 Node.js，优先采用应用提供的 `CODEX_MCP_NODE_PATH`，其次使用 PATH 中的 `node`，不需要 npm 安装依赖。工具和桥接文件随 Python 包一起安装，源码目录移动后仍可使用。普通外部终端不会自动获得桌面通道，需从桌面 Codex 会话内部调用；桌面模式下 `threads` 只显示当前会话，显式 `--thread` 可指定同一实例中已加载的本地会话。
-
-桌面通道来自应用内置插件，尚非稳定的公开接口；应用版本改变时，接口可能变化。Windows Codex 桌面版 26.928.2636.0 上已实测两分钟延迟，确认忙碌时消息进入同一回合；也已实测一小时延迟，在会话空闲时自动开启新一轮，发送时间比计划时间晚约 2 秒。
+已在 Windows 上验证完整 npm 安装的 Codex CLI 0.159.2 和 Codex 桌面版 26.928.2636.0。桌面实测覆盖两分钟延迟的忙碌追加，以及一小时延迟的空闲唤醒（确认送达比计划时间晚约 2 秒）。macOS/Linux 尚未实测。
 
 ## 命令
 
