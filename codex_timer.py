@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 
 
 def codex_home(explicit=None):
@@ -71,15 +71,35 @@ def skill_payload():
             "agents/openai.yaml": folder.joinpath("agents").joinpath("openai.yaml").read_text(encoding="utf-8")}
 
 
+def read_skill_manifest(path, force=False):
+    if not path.exists():
+        return None
+    try:
+        record = read_json(path)
+        if not isinstance(record, dict):
+            raise ValueError("管理记录必须是对象")
+        if record.get("owner") != "codex-timer":
+            return None
+        files = record.get("files")
+        if not isinstance(files, dict) or not all(
+                isinstance(name, str) and isinstance(digest, str)
+                and re.fullmatch(r"[0-9a-f]{64}", digest)
+                for name, digest in files.items()):
+            raise ValueError("管理记录的 files 字段无效")
+        return record
+    except ValueError as exc:
+        if force:
+            return None
+        raise TimerError("skill 管理记录损坏，已保留；可用 --force 备份并替换") from exc
+
+
 def check_skill_destination(home=None, force=False):
     root = codex_home(home) / "skills"
     target = root / "codex-timer"
     if target.resolve().parent != root.resolve() or target.is_symlink():
         raise TimerError("skill 目标是指向其他目录的链接，拒绝覆盖：" + str(target))
     manifest = target / ".codex-timer-managed.json"
-    previous = None
-    if manifest.exists():
-        previous = read_json(manifest)
+    previous = read_skill_manifest(manifest, force)
     if target.exists() and any(target.iterdir()) and not (previous and previous.get("owner") == "codex-timer") and not force:
         raise TimerError("已存在非本工具管理的 codex-timer skill，已保留。若确认替换，请运行 codex-timer install-skill --force；旧文件会备份。")
     return target, manifest, previous
@@ -126,8 +146,8 @@ def uninstall_skill(home=None):
     manifest = target / ".codex-timer-managed.json"
     if not manifest.exists():
         raise TimerError("该 skill 没有本工具的管理记录，已保留")
-    record = read_json(manifest)
-    if record.get("owner") != "codex-timer":
+    record = read_skill_manifest(manifest)
+    if record is None:
         raise TimerError("该 skill 不属于本工具，已保留")
     retained = []
     for relative, digest in record.get("files", {}).items():
@@ -444,7 +464,12 @@ class DesktopRpc:
             if mutation:
                 raise DeliveryUnknown("桌面发送确认格式无法识别，不会自动重发")
             raise TimerError("桌面工具返回格式无法识别")
-        text = "\n".join(item["text"] for item in result.get("contentItems", [])
+        items = result.get("contentItems")
+        if not isinstance(items, list):
+            if mutation:
+                raise DeliveryUnknown("桌面发送确认内容无法识别，不会自动重发")
+            raise TimerError("桌面工具返回内容无法识别")
+        text = "\n".join(item["text"] for item in items
                          if isinstance(item, dict) and item.get("type") == "inputText" and isinstance(item.get("text"), str))
         if result.get("success") is not True:
             if mutation:
@@ -463,6 +488,9 @@ class DesktopRpc:
         if not isinstance(data, dict) or not isinstance(data.get("thread"), dict):
             raise TimerError("桌面会话读取返回格式无法识别")
         thread = data.get("thread", {})
+        if (not isinstance(thread.get("status"), dict) or not isinstance(data.get("turns", []), list)
+                or not all(isinstance(turn, dict) for turn in data.get("turns", []))):
+            raise TimerError("桌面会话状态或回合列表格式无法识别")
         if thread.get("id") != thread_id or thread.get("hostId") != "local" or thread.get("kind") != "codex":
             raise TimerError("只能接入当前桌面实例中的本地 Codex 会话")
         if thread.get("status", {}).get("type") not in ("active", "idle"):
@@ -474,11 +502,16 @@ class DesktopRpc:
         check_runtime(self.runtime, channel=True)
         result = self.tool("send_message_to_thread", {"threadId": thread_id, "hostId": "local", "prompt": message},
                            mutation=True)
-        turn_id = result.get("turnId") if isinstance(result, dict) else None
+        if (not isinstance(result, dict) or result.get("threadId") != thread_id
+                or any(result.get(key) is False for key in ("success", "accepted", "delivered"))):
+            raise DeliveryUnknown("桌面发送确认未标明目标会话或成功接收，不会自动重发")
+        turn_id = result.get("turnId")
+        if turn_id is not None and (not isinstance(turn_id, str) or not turn_id):
+            raise DeliveryUnknown("桌面发送确认的回合 ID 无效，不会自动重发")
         if not turn_id and before["thread"]["status"]["type"] == "active":
             # Some app acknowledgements omit the turn id. Only record it if a
             # post-acceptance read confirms the original turn is still active.
-            prior = next((t["id"] for t in before.get("turns", []) if t.get("status") == "inProgress"), None)
+            prior = next((t.get("id") for t in before.get("turns", []) if t.get("status") == "inProgress"), None)
             with contextlib.suppress(TimerError):
                 after = self.read(thread_id)
                 if prior and any(t.get("id") == prior and t.get("status") == "inProgress" for t in after.get("turns", [])):
@@ -685,7 +718,7 @@ def dispatch(rpc, thread_id, message, task_id):
             params["expectedTurnId"] = turn_id
             try:
                 result = rpc.call("turn/steer", params, mutation=True)
-                return "turn/steer", result["turnId"]
+                return "turn/steer", confirmed_turn(result, "turn/steer")
             except RpcError as exc:
                 # Only a known rejected precondition is safe to re-read/retry.
                 text = str(exc).lower()
@@ -694,11 +727,21 @@ def dispatch(rpc, thread_id, message, task_id):
                 raise
         if status == "idle":
             result = rpc.call("turn/start", params, mutation=True)
-            return "turn/start", result["turn"]["id"]
+            return "turn/start", confirmed_turn(result, "turn/start")
         if status == "notLoaded":
             raise RuntimeGone("目标会话已卸载")
         raise TimerError("目标会话 runtime 状态异常：" + status)
     raise TimerError("会话状态持续变化，无法确认当前任务；本次未发送")
+
+
+def confirmed_turn(result, method):
+    try:
+        turn_id = result["turnId"] if method == "turn/steer" else result["turn"]["id"]
+        if not isinstance(turn_id, str) or not turn_id:
+            raise ValueError("Invalid turn id")
+        return turn_id
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DeliveryUnknown("CLI 发送确认格式无法识别，不会自动重发") from exc
 
 
 def detached_kwargs():
@@ -746,11 +789,12 @@ def schedule(args, state):
         emit(task_view(conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()))
 
 
-def finish(state, task_id, status, detail=None, method=None, turn_id=None):
+def finish(state, task_id, status, detail=None, method=None, turn_id=None, *, claimed=False):
+    # An observer may finish only pending; only the successful claimant owns sending.
     with connect_db(state) as conn:
         conn.execute("""UPDATE tasks SET status=?, detail=?, method=?, turn_id=?, finished=?
-            WHERE id=? AND status IN ('pending','sending')""",
-            (status, detail, method, turn_id, time.time(), task_id))
+            WHERE id=? AND status=?""",
+            (status, detail, method, turn_id, time.time(), task_id, "sending" if claimed else "pending"))
 
 
 def worker(state, task_id):
@@ -768,6 +812,7 @@ def worker(state, task_id):
         if remaining > 0:
             time.sleep(min(remaining, 1.0))
             continue
+        claimed = False
         try:
             runtime = runtime_record(row["runtime_path"], row["runtime_id"])
             with connect_runtime(runtime) as rpc:
@@ -778,15 +823,17 @@ def worker(state, task_id):
                     row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
                 if not changed:
                     continue
+                claimed = True
                 runtime_record(row["runtime_path"], row["runtime_id"])
                 method, turn_id = dispatch(rpc, row["thread_id"], row["message"], task_id)
-                finish(state, task_id, "delivered", "runtime 已确认接收；不代表模型已完成执行", method, turn_id)
+                finish(state, task_id, "delivered", "runtime 已确认接收；不代表模型已完成执行", method, turn_id,
+                       claimed=claimed)
         except RuntimeGone as exc:
-            finish(state, task_id, "skipped", str(exc))
+            finish(state, task_id, "skipped", str(exc), claimed=claimed)
         except DeliveryUnknown as exc:
-            finish(state, task_id, "unknown", str(exc))
+            finish(state, task_id, "unknown", str(exc), claimed=claimed)
         except Exception as exc:
-            finish(state, task_id, "failed", str(exc))
+            finish(state, task_id, "failed", str(exc), claimed=claimed)
         return
 
 

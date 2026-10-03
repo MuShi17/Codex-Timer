@@ -46,7 +46,7 @@ def main():
         installed = run([sys.executable, str(clone / 'install.py'), '--no-path-update'])
         print(installed.stdout, flush=True)
         assert (home / 'skills' / 'codex-timer' / 'SKILL.md').is_file()
-        assert command('--version').stdout.strip() == 'codex-timer 0.4.1'
+        assert command('--version').stdout.strip() == 'codex-timer 0.4.2'
         doctor = json.loads(command('doctor').stdout)
         assert Path(doctor['state']) == home / 'codex-timer', doctor
         assert doctor['skill_installed'] and doctor['command'], doctor
@@ -54,7 +54,7 @@ def main():
         moved = root / 'moved-clone'
         assert clone.resolve().parent == root.resolve() and moved.resolve().parent == root.resolve()
         clone.rename(moved)
-        assert command('--version').stdout.strip() == 'codex-timer 0.4.1'
+        assert command('--version').stdout.strip() == 'codex-timer 0.4.2'
         assert json.loads(command('install-skill').stdout)['status'] == 'installed'
         skill_path = home / 'skills' / 'codex-timer' / 'SKILL.md'
         original = skill_path.read_bytes()
@@ -81,15 +81,24 @@ def main():
         command('install-skill', '--force')
         env['CODEX_TIMER_TEST_COMMAND'] = str(bin_dir / ('codex-timer.exe' if os.name == 'nt' else 'codex-timer'))
         env['CODEX_TIMER_TEST_INSTALLED'] = '1'
+        regression = run([doctor['python'], str(ROOT / 'tests' / 'adversarial.py')])
+        print(regression.stdout, flush=True)
+        if os.name == 'nt':
+            hidden = run([doctor['python'], str(ROOT / 'tests' / 'windows_worker.py')])
+            print(hidden.stdout, flush=True)
         desktop = run([doctor['python'], str(ROOT / 'tests' / 'desktop_transport.py')])
         print(desktop.stdout, flush=True)
         pty_package = 'pywinpty>=2,<3' if os.name == 'nt' else 'pexpect>=4,<5'
         run([shutil.which('uv'), 'pip', 'install', '--python', doctor['python'], pty_package])
+        evidence_before = json.loads((ROOT / 'verification.json').read_text(encoding='utf-8'))
         normal = run([doctor['python'], str(ROOT / 'tests' / 'normal_cli.py')])
         print(normal.stdout, flush=True)
         verification = json.loads((ROOT / 'verification.json').read_text(encoding='utf-8'))
+        for key, value in evidence_before.items():
+            if key not in ('version', 'normal_cli'):
+                assert verification[key] == value, 'Historical verification section overwritten: ' + key
         verification['global_install'] = {
-            'version': '0.4.1', 'isolated_tool_and_codex_home': True,
+            'version': '0.4.2', 'isolated_tool_and_codex_home': True,
             'passed': [
                 'one installation command installs the global CLI and skill',
                 'bare codex-timer command works from an unrelated project directory',

@@ -1,5 +1,5 @@
 {
-  "version": "0.4.0",
+  "version": "0.4.2",
   "normal_cli": {
     "codex_version": "codex-cli 0.159.2",
     "provider": "local fake Responses endpoint; no external model calls",
@@ -19,7 +19,7 @@
     ]
   },
   "global_install": {
-    "version": "0.4.0",
+    "version": "0.4.2",
     "isolated_tool_and_codex_home": true,
     "passed": [
       "one installation command installs the global CLI and skill",
@@ -86,5 +86,21 @@
         "delivery acknowledgement arrived approximately two seconds after the scheduled time"
       ]
     }
+  },
+  "adversarial_regressions": {
+    "version": "0.4.2",
+    "date": "2026-10-03",
+    "passed": [
+      "pre-claim runtime and connection failures cannot overwrite another sender",
+      "CLI malformed acknowledgement becomes unknown without retry",
+      "desktop acknowledgement requires matching thread identity and valid optional turn id",
+      "desktop null/false/malformed acknowledgements become unknown without retry",
+      "optional post-acceptance read failure retains delivered classification",
+      "corrupt skill manifests require force and user edits are backed up",
+      "normal CLI test preserves unrelated historical evidence",
+      "installed Windows worker has no console window"
+    ],
+    "live_desktop_read_verified": true,
+    "live_desktop_send_retested": false
   }
 }

@@ -27,6 +27,7 @@ const server = net.createServer(socket => {
       if (state.malformed) return respond({result:null});
       if (state.noResult) return respond({});
       result = {threadId:args.threadId, turnId:state.status==='active'?state.turnId:'new-turn'};
+      if ('ack' in state) result = state.ack;
     }
     if (request.method !== 'tools/list') result={success:true, contentItems:[{type:'inputText',text:JSON.stringify(result)}]};
     respond({result});

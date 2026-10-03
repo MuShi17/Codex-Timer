@@ -71,6 +71,19 @@ def main():
                 except timer.DeliveryUnknown: pass
                 else: raise AssertionError(mode)
                 assert len(calls())==before+1
+            for acknowledgement in (None, False, {}, {'delivered':False}, {'threadId':'wrong'},
+                                    {'threadId':'desktop-self','turnId':False},
+                                    {'threadId':'desktop-self','accepted':False}):
+                before=len(calls()); settings(ack=acknowledgement)
+                try: rpc.dispatch('desktop-self','unrecognized-ack')
+                except timer.DeliveryUnknown: pass
+                else: raise AssertionError(acknowledgement)
+                assert len(calls())==before+1
+            # Real app acknowledgements can omit turnId; target identity remains required.
+            settings(ack={'threadId':'desktop-self'})
+            assert rpc.dispatch('desktop-self','idle-no-turn-id') == ('send_message_to_thread',None)
+            settings(status='active',ack={'threadId':'desktop-self'})
+            assert rpc.dispatch('desktop-self','busy-no-turn-id') == ('send_message_to_thread','busy-turn')
             # A failed desktop discovery must never fall through to a CLI daemon.
             with patch.dict(os.environ, {'CODEX_APP_TOOLS_PIPE_PATH':pipe}), \
                  patch.object(timer,'discover_desktop',side_effect=timer.TimerError('desktop unavailable')), \
@@ -102,6 +115,10 @@ def main():
             timer.worker(state,ambiguous); assert row(ambiguous)['status']=='unknown'
             timer.worker(state,ambiguous)
             assert len([c for c in calls() if c['prompt']=='ambiguous-worker'])==1
+            settings(ack=None); invalid_ack=task('invalid-ack-worker')
+            timer.worker(state,invalid_ack); assert row(invalid_ack)['status']=='unknown'
+            timer.worker(state,invalid_ack)
+            assert len([c for c in calls() if c['prompt']=='invalid-ack-worker'])==1
             settings(); closed=task('closed-runtime')
             server.terminate(); server.wait(timeout=5)
             timer.worker(state,closed); assert row(closed)['status']=='skipped'

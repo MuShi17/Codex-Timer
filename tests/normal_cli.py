@@ -184,7 +184,8 @@ def main():
                                  'unloaded session is skipped without resume',
                                  'shared runtime closed -> skipped; replacement cannot receive old timers']}
             path = ROOT / 'verification.json'
-            verification = {'version':timer.VERSION, 'normal_cli':report}
+            verification = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+            verification.update(version=timer.VERSION, normal_cli=report)
             path.write_text(json.dumps(verification, ensure_ascii=False, indent=2), encoding='utf-8')
             print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
         finally:
