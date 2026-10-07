@@ -598,12 +598,24 @@ def owns_current_call(runtime):
         return False
 
 
+def owns_linux_socket(process, socket_path):
+    resolved = str(Path(socket_path).resolve())
+    return any(connection.laddr == resolved
+               for connection in process.net_connections(kind="unix"))
+
+
 def check_daemon(runtime):
     try:
         import psutil
-        current = read_json(runtime["daemon_pid_file"])
         process = psutil.Process(runtime["daemon_pid"])
-        if (daemon_identity(current) != runtime["daemon_identity"]
+        if runtime.get("daemon_process"):
+            identity_changed = (sys.platform != "linux"
+                                or process_snapshot(process) != runtime["daemon_process"]
+                                or not owns_linux_socket(process, runtime["socket_path"]))
+        else:
+            current = read_json(runtime["daemon_pid_file"])
+            identity_changed = daemon_identity(current) != runtime["daemon_identity"]
+        if (identity_changed
                 or process.create_time() != runtime["daemon_created"]
                 or socket_identity(runtime["socket_path"]) != runtime["socket_identity"]
                 or not process.is_running() or process.status() == psutil.STATUS_ZOMBIE):
@@ -612,6 +624,35 @@ def check_daemon(runtime):
         raise
     except (OSError, ValueError, KeyError, psutil.Error) as exc:
         raise RuntimeGone("原共享 runtime 已不可用") from exc
+
+
+def discover_linux_server(state, socket_path, thread_id):
+    """Bind a PID-file-free Linux server to the caller's ancestry and socket."""
+    import psutil
+    try:
+        for process in psutil.Process().parents():
+            if Path(process.exe()).name != "codex" or "app-server" not in process.cmdline():
+                continue
+            if not owns_linux_socket(process, socket_path):
+                continue
+            snapshot = process_snapshot(process)
+            socket_snapshot = socket_identity(socket_path)
+            runtime_id = hashlib.sha256(json.dumps([snapshot, socket_snapshot], sort_keys=True).encode()).hexdigest()
+            runtime = {"id": runtime_id, "transport": "daemon", "alive": True,
+                       "endpoint": "ws://localhost/", "socket_path": str(socket_path),
+                       "codex": snapshot["executable"], "daemon_process": snapshot,
+                       "daemon_pid": snapshot["pid"], "daemon_created": snapshot["created"],
+                       "socket_identity": socket_snapshot}
+            with Rpc(runtime, timeout=3) as rpc:
+                if thread_id is not None and thread_id not in rpc.loaded():
+                    continue
+            check_daemon(runtime)
+            path = state / "runtimes" / (runtime_id + ".json")
+            write_json(path, runtime)
+            return path.resolve(), runtime
+    except (OSError, ValueError, KeyError, psutil.Error, RuntimeGone):
+        pass
+    return None
 
 
 def discover_daemon(state, thread_id=None, require_self=False):
@@ -647,6 +688,9 @@ def discover_daemon(state, thread_id=None, require_self=False):
             return path.resolve(), runtime
         except (OSError, ValueError, KeyError, psutil.Error, RuntimeGone):
             continue
+    if sys.platform == "linux" and not any(
+            (home / "app-server-daemon" / name).exists() for name in ("daemon.pid", "app-server.pid")):
+        return discover_linux_server(state, socket_path, thread_id)
     return None
 
 
